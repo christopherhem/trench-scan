@@ -31,7 +31,8 @@ from src.bots.telegram_bot import TelegramBot
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(d-%b-%y %H:%M:%S) - %(message)s",
+    format="%(asctime)s - %(message)s",
+    datefmt="%d-%b-%y %H:%M:%S",
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler("trench_scan.log"),
