@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trench Scan - Memecoin Radar</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        'neon-green': '#39ff14',
+                        'neon-pink': '#ff6ec7',
+                        'dark-bg': '#0a0a0f',
+                        'dark-card': '#12121a',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+        }
+        .glow-green {
+            text-shadow: 0 0 10px #39ff14, 0 0 20px #39ff14;
+        }
+        .card-glow:hover {
+            box-shadow: 0 0 20px rgba(57, 255, 20, 0.3);
+        }
+        .ticker-row:hover {
+            background: rgba(57, 255, 20, 0.1);
+        }
+        @keyframes pulse-glow {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+        .animate-pulse-glow {
+            animation: pulse-glow 2s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body class="min-h-screen text-gray-100">
+    <!-- Header -->
+    <header class="border-b border-gray-800 bg-dark-bg/80 backdrop-blur-sm sticky top-0 z-50">
+        <div class="container mx-auto px-4 py-4">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                    <div class="w-10 h-10 bg-neon-green/20 rounded-lg flex items-center justify-center">
+                        <span class="text-neon-green text-xl">$</span>
+                    </div>
+                    <h1 class="text-2xl font-bold">
+                        <span class="text-neon-green glow-green">Trench</span>
+                        <span class="text-gray-400">Scan</span>
+                    </h1>
+                </div>
+                <div class="text-sm text-gray-500">
+                    Last updated: {{ last_updated }}
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Content -->
+    <main class="container mx-auto px-4 py-8">
+        <!-- Stats Cards -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+            <div class="bg-dark-card rounded-xl p-6 border border-gray-800 card-glow transition-all">
+                <div class="text-gray-500 text-sm mb-1">Total Tickers Tracked</div>
+                <div class="text-3xl font-bold text-neon-green">{{ stats.total_tickers }}</div>
+            </div>
+            <div class="bg-dark-card rounded-xl p-6 border border-gray-800 card-glow transition-all">
+                <div class="text-gray-500 text-sm mb-1">Mentions (24h)</div>
+                <div class="text-3xl font-bold text-neon-pink">{{ stats.mentions_24h }}</div>
+            </div>
+            <div class="bg-dark-card rounded-xl p-6 border border-gray-800 card-glow transition-all">
+                <div class="text-gray-500 text-sm mb-1">Total Mentions</div>
+                <div class="text-3xl font-bold text-white">{{ stats.total_mentions }}</div>
+            </div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Trending Tickers -->
+            <div class="lg:col-span-2">
+                <div class="bg-dark-card rounded-xl border border-gray-800 overflow-hidden">
+                    <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+                        <h2 class="text-xl font-bold flex items-center">
+                            <span class="w-2 h-2 bg-neon-green rounded-full mr-3 animate-pulse-glow"></span>
+                            Trending Tickers
+                        </h2>
+                        <span class="text-xs text-gray-500">Ranked by velocity + mentions</span>
+                    </div>
+
+                    <div class="overflow-x-auto">
+                        <table class="w-full">
+                            <thead>
+                                <tr class="text-gray-500 text-sm border-b border-gray-800">
+                                    <th class="px-6 py-3 text-left">#</th>
+                                    <th class="px-6 py-3 text-left">Ticker</th>
+                                    <th class="px-6 py-3 text-right">1h</th>
+                                    <th class="px-6 py-3 text-right">24h</th>
+                                    <th class="px-6 py-3 text-right">Velocity</th>
+                                    <th class="px-6 py-3 text-right">Score</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for ticker in trending %}
+                                <tr class="ticker-row border-b border-gray-800/50 cursor-pointer transition-all"
+                                    onclick="showTickerDetail('{{ ticker.symbol }}')">
+                                    <td class="px-6 py-4 text-gray-500">{{ loop.index }}</td>
+                                    <td class="px-6 py-4">
+                                        <span class="text-neon-green font-mono font-bold">${{ ticker.symbol }}</span>
+                                        {% if ticker.mentions_1h > 5 %}
+                                        <span class="ml-2 px-2 py-0.5 bg-red-500/20 text-red-400 text-xs rounded-full">HOT</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-6 py-4 text-right font-mono">{{ ticker.mentions_1h }}</td>
+                                    <td class="px-6 py-4 text-right font-mono">{{ ticker.mentions_24h }}</td>
+                                    <td class="px-6 py-4 text-right">
+                                        {% if ticker.velocity > 0 %}
+                                        <span class="text-green-400">+{{ "%.1f"|format(ticker.velocity) }}x</span>
+                                        {% else %}
+                                        <span class="text-gray-500">{{ "%.1f"|format(ticker.velocity) }}x</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="px-6 py-4 text-right font-bold">{{ "%.0f"|format(ticker.score) }}</td>
+                                </tr>
+                                {% else %}
+                                <tr>
+                                    <td colspan="6" class="px-6 py-12 text-center text-gray-500">
+                                        No trending tickers yet. Run the scraper to collect data.
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- New Discoveries -->
+            <div class="lg:col-span-1">
+                <div class="bg-dark-card rounded-xl border border-gray-800 overflow-hidden">
+                    <div class="px-6 py-4 border-b border-gray-800">
+                        <h2 class="text-xl font-bold flex items-center">
+                            <span class="w-2 h-2 bg-neon-pink rounded-full mr-3 animate-pulse-glow"></span>
+                            New Discoveries (24h)
+                        </h2>
+                    </div>
+
+                    <div class="divide-y divide-gray-800/50 max-h-96 overflow-y-auto">
+                        {% for ticker in new_tickers[:15] %}
+                        <div class="px-6 py-3 hover:bg-gray-800/30 cursor-pointer transition-all"
+                             onclick="showTickerDetail('{{ ticker.symbol }}')">
+                            <div class="flex items-center justify-between">
+                                <span class="text-neon-pink font-mono font-bold">${{ ticker.symbol }}</span>
+                                <span class="text-xs text-gray-500">
+                                    {{ ticker.first_seen.strftime('%H:%M') }}
+                                </span>
+                            </div>
+                            <div class="text-xs text-gray-500 mt-1">
+                                {{ ticker.total_mentions }} mentions
+                            </div>
+                        </div>
+                        {% else %}
+                        <div class="px-6 py-12 text-center text-gray-500">
+                            No new tickers in the last 24h
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="mt-4 bg-dark-card rounded-xl border border-gray-800 p-6">
+                    <h3 class="font-bold mb-4">Quick Links</h3>
+                    <div class="space-y-2">
+                        <a href="/api/trending" target="_blank"
+                           class="block px-4 py-2 bg-gray-800 rounded-lg hover:bg-gray-700 transition-all text-sm">
+                            API: /api/trending
+                        </a>
+                        <a href="/api/stats" target="_blank"
+                           class="block px-4 py-2 bg-gray-800 rounded-lg hover:bg-gray-700 transition-all text-sm">
+                            API: /api/stats
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Ticker Detail Modal -->
+    <div id="ticker-modal" class="fixed inset-0 bg-black/80 backdrop-blur-sm hidden items-center justify-center z-50">
+        <div class="bg-dark-card rounded-xl border border-gray-800 w-full max-w-2xl mx-4 max-h-[80vh] overflow-hidden">
+            <div class="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
+                <h3 id="modal-ticker" class="text-xl font-bold text-neon-green"></h3>
+                <button onclick="closeModal()" class="text-gray-500 hover:text-white">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+            <div id="modal-content" class="p-6 overflow-y-auto max-h-[60vh]">
+                Loading...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function showTickerDetail(symbol) {
+            const modal = document.getElementById('ticker-modal');
+            const title = document.getElementById('modal-ticker');
+            const content = document.getElementById('modal-content');
+
+            title.textContent = '$' + symbol;
+            content.innerHTML = '<div class="text-center text-gray-500">Loading...</div>';
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+
+            try {
+                const response = await fetch(`/api/ticker/${symbol}`);
+                const data = await response.json();
+
+                if (data.error) {
+                    content.innerHTML = `<div class="text-red-400">${data.error}</div>`;
+                    return;
+                }
+
+                const ticker = data.ticker;
+                const mentions = data.mentions;
+
+                content.innerHTML = `
+                    <div class="grid grid-cols-2 gap-4 mb-6">
+                        <div class="bg-gray-800/50 rounded-lg p-4">
+                            <div class="text-gray-500 text-sm">First Seen</div>
+                            <div class="font-mono">${new Date(ticker.first_seen).toLocaleString()}</div>
+                        </div>
+                        <div class="bg-gray-800/50 rounded-lg p-4">
+                            <div class="text-gray-500 text-sm">Total Mentions</div>
+                            <div class="font-bold text-xl">${ticker.total_mentions}</div>
+                        </div>
+                    </div>
+
+                    <h4 class="font-bold mb-3">Recent Mentions</h4>
+                    <div class="space-y-3">
+                        ${mentions.slice(0, 10).map(m => `
+                            <div class="bg-gray-800/30 rounded-lg p-4">
+                                <div class="flex items-center justify-between mb-2">
+                                    <span class="text-neon-green">@${m.author}</span>
+                                    <span class="text-xs text-gray-500">${new Date(m.timestamp).toLocaleString()}</span>
+                                </div>
+                                <p class="text-sm text-gray-300">${m.text.substring(0, 280)}${m.text.length > 280 ? '...' : ''}</p>
+                                <div class="flex items-center space-x-4 mt-2 text-xs text-gray-500">
+                                    <span>${m.likes} likes</span>
+                                    <span>${m.retweets} RTs</span>
+                                    ${m.url ? `<a href="${m.url}" target="_blank" class="text-neon-green hover:underline">View</a>` : ''}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                `;
+            } catch (error) {
+                content.innerHTML = `<div class="text-red-400">Failed to load ticker data</div>`;
+            }
+        }
+
+        function closeModal() {
+            const modal = document.getElementById('ticker-modal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        // Close modal on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        // Auto-refresh every 60 seconds
+        setTimeout(() => location.reload(), 60000);
+    </script>
+</body>
+</html>
