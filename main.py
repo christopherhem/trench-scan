@@ -3,16 +3,19 @@
 Trench Scan - Viral Trend Scraper for Memecoin Detection
 
 Usage:
-    python main.py scrape      - Run a single scrape cycle
-    python main.py dashboard   - Start the web dashboard
-    python main.py bot         - Start the Telegram bot
-    python main.py run         - Run scraper + dashboard + bot
-    python main.py init        - Initialize the database
+    python main.py scrape          - Run a single scrape cycle
+    python main.py dashboard       - Start the web dashboard
+    python main.py bot             - Start the Telegram bot
+    python main.py run             - Run scraper + dashboard + bot
+    python main.py init            - Initialize the database
+    python main.py add-account     - Add a Twitter account for scraping
+    python main.py check-accounts  - Check status of Twitter accounts
 """
 
 import asyncio
 import logging
 import sys
+import getpass
 from datetime import datetime, timedelta
 
 import uvicorn
@@ -28,7 +31,7 @@ from src.bots.telegram_bot import TelegramBot
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    format="%(d-%b-%y %H:%M:%S) - %(message)s",
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler("trench_scan.log"),
@@ -37,11 +40,57 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+async def add_twitter_account():
+    """Interactively add a Twitter account for scraping"""
+    print("\n=== Add Twitter Account for Scraping ===\n")
+    print("Enter your Twitter/X account credentials.")
+    print("(Use a burner account, not your main account)\n")
+
+    username = input("Twitter username: ").strip()
+    password = getpass.getpass("Twitter password: ")
+    email = input("Email for the account: ").strip()
+    email_password = getpass.getpass("Email password (optional, press Enter to skip): ")
+
+    scraper = TwitterScraper()
+    try:
+        await scraper.add_account(username, password, email, email_password or "")
+        print(f"\nAccount @{username} added successfully!")
+        print("You can now run 'python main.py run' to start scraping.")
+    except Exception as e:
+        print(f"\nFailed to add account: {e}")
+        print("Make sure the credentials are correct and try again.")
+
+
+async def check_twitter_accounts():
+    """Check status of configured Twitter accounts"""
+    scraper = TwitterScraper()
+    accounts = await scraper.api.pool.accounts_info()
+
+    if not accounts:
+        print("\nNo Twitter accounts configured.")
+        print("Run 'python main.py add-account' to add one.")
+        return
+
+    print("\n=== Twitter Accounts ===\n")
+    for acc in accounts:
+        status = "Active" if acc["active"] else "Inactive"
+        print(f"  @{acc['username']} - {status}")
+
+    active = [a for a in accounts if a["active"]]
+    print(f"\nTotal: {len(accounts)} accounts, {len(active)} active")
+
+
 async def run_scrape_cycle():
     """Run a single scrape and analysis cycle"""
     logger.info("Starting scrape cycle...")
 
     scraper = TwitterScraper()
+
+    # Check if we have accounts
+    if not await scraper.check_accounts():
+        logger.error("No Twitter accounts configured. Run 'python main.py add-account' first.")
+        return
+
     db = SessionLocal()
 
     try:
@@ -49,7 +98,7 @@ async def run_scrape_cycle():
 
         # Scrape memecoin-related tweets
         logger.info("Searching for memecoin tweets...")
-        tweets = scraper.search_memecoin_terms(max_results=100)
+        tweets = await scraper.search_memecoin_terms(max_results=100)
 
         if not tweets:
             logger.warning("No tweets found in this cycle")
@@ -144,6 +193,12 @@ async def run_all():
     # Initialize database
     init_db()
 
+    # Check for Twitter accounts first
+    scraper = TwitterScraper()
+    if not await scraper.check_accounts():
+        logger.warning("No Twitter accounts configured. Scraper will not collect data.")
+        logger.warning("Run 'python main.py add-account' to add a Twitter account.")
+
     # Create tasks
     tasks = [
         asyncio.create_task(run_scraper_loop()),
@@ -177,6 +232,12 @@ def main():
         print("Initializing database...")
         init_db()
         print("Database initialized successfully.")
+
+    elif command == "add-account":
+        asyncio.run(add_twitter_account())
+
+    elif command == "check-accounts":
+        asyncio.run(check_twitter_accounts())
 
     elif command == "scrape":
         print("Running single scrape cycle...")

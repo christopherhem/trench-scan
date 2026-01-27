@@ -1,5 +1,5 @@
 # Scraping
-ntscraper>=0.3.0
+twscrape>=0.12.0
 httpx>=0.25.0
 beautifulsoup4>=4.12.0
 

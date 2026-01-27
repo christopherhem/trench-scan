@@ -54,6 +54,8 @@ class TelegramBot:
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start command"""
+        if not update.message:
+            return
         welcome_msg = (
             "*Trench Scan Bot*\n\n"
             "Your memecoin radar is active.\n\n"
@@ -68,6 +70,8 @@ class TelegramBot:
 
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help command"""
+        if not update.message:
+            return
         help_msg = (
             "*Trench Scan Commands*\n\n"
             "/trending - Show top 10 trending tickers by velocity\n"
@@ -83,6 +87,8 @@ class TelegramBot:
 
     async def cmd_trending(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /trending command"""
+        if not update.message:
+            return
         db = SessionLocal()
         try:
             analyzer = TickerAnalyzer(db)
@@ -107,6 +113,8 @@ class TelegramBot:
 
     async def cmd_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /new command"""
+        if not update.message:
+            return
         db = SessionLocal()
         try:
             analyzer = TickerAnalyzer(db)
@@ -127,6 +135,8 @@ class TelegramBot:
 
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /stats command"""
+        if not update.message:
+            return
         from sqlalchemy import func
         from datetime import timedelta
         from src.database.models import Mention
@@ -165,6 +175,8 @@ class TelegramBot:
 
     async def cmd_ticker(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /ticker <SYMBOL> command"""
+        if not update.message:
+            return
         if not context.args:
             await update.message.reply_text("Usage: /ticker SYMBOL\nExample: /ticker PEPE")
             return

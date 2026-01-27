@@ -1,12 +1,16 @@
-import re
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from typing import Optional
 from dataclasses import dataclass
+from pathlib import Path
 
-from ntscraper import Nitter
+from twscrape import API, gather
+from twscrape.logger import set_log_level
 
 logger = logging.getLogger(__name__)
+
+# Suppress twscrape debug logs
+set_log_level("WARNING")
 
 
 @dataclass
@@ -24,40 +28,39 @@ class Tweet:
 
 
 class TwitterScraper:
-    """Scraper for Twitter/X using Nitter instances"""
+    """Scraper for Twitter/X using twscrape"""
 
-    # List of known working Nitter instances (may need updates)
-    NITTER_INSTANCES = [
-        "https://nitter.privacydev.net",
-        "https://nitter.poast.org",
-        "https://nitter.woodland.cafe",
-        "https://nitter.1d4.us",
-    ]
+    def __init__(self, db_path: str = "twscrape_accounts.db"):
+        self.db_path = db_path
+        self.api = API(db_path)
+        self._initialized = False
 
-    def __init__(self):
-        self.scraper = Nitter()
-        self._working_instance = None
+    async def add_account(self, username: str, password: str, email: str, email_password: str = ""):
+        """
+        Add a Twitter account for scraping.
 
-    def _find_working_instance(self) -> Optional[str]:
-        """Find a working Nitter instance"""
-        if self._working_instance:
-            return self._working_instance
+        Args:
+            username: Twitter username
+            password: Twitter password
+            email: Email associated with the account
+            email_password: Email password (for verification if needed)
+        """
+        await self.api.pool.add_account(username, password, email, email_password)
+        await self.api.pool.login_all()
+        logger.info(f"Added Twitter account: @{username}")
 
-        for instance in self.NITTER_INSTANCES:
-            try:
-                # Test the instance
-                self.scraper.get_tweets("elonmusk", mode="user", number=1, instance=instance)
-                self._working_instance = instance
-                logger.info(f"Using Nitter instance: {instance}")
-                return instance
-            except Exception as e:
-                logger.warning(f"Instance {instance} failed: {e}")
-                continue
+    async def check_accounts(self) -> bool:
+        """Check if we have any logged-in accounts"""
+        accounts = await self.api.pool.accounts_info()
+        active = [a for a in accounts if a["active"]]
+        if active:
+            logger.info(f"Found {len(active)} active Twitter account(s)")
+            return True
+        else:
+            logger.warning("No active Twitter accounts. Add one with 'python main.py add-account'")
+            return False
 
-        logger.error("No working Nitter instances found")
-        return None
-
-    def search_tweets(
+    async def search_tweets(
         self,
         query: str,
         max_results: int = 50,
@@ -74,24 +77,18 @@ class TwitterScraper:
         Returns:
             List of Tweet objects
         """
-        instance = self._find_working_instance()
-        if not instance:
-            logger.error("Cannot search - no working Nitter instance")
+        if not await self.check_accounts():
             return []
 
         try:
-            results = self.scraper.get_tweets(
-                query, mode="term", number=max_results, instance=instance
-            )
-
             tweets = []
-            for tweet_data in results.get("tweets", []):
+            async for tweet in self.api.search(query, limit=max_results):
                 try:
-                    tweet = self._parse_tweet(tweet_data)
-                    if tweet:
-                        if since and tweet.timestamp < since:
+                    parsed = self._parse_tweet(tweet)
+                    if parsed:
+                        if since and parsed.timestamp < since:
                             continue
-                        tweets.append(tweet)
+                        tweets.append(parsed)
                 except Exception as e:
                     logger.warning(f"Failed to parse tweet: {e}")
                     continue
@@ -101,11 +98,9 @@ class TwitterScraper:
 
         except Exception as e:
             logger.error(f"Search failed for '{query}': {e}")
-            # Reset instance to try another next time
-            self._working_instance = None
             return []
 
-    def get_user_tweets(
+    async def get_user_tweets(
         self,
         username: str,
         max_results: int = 20,
@@ -122,24 +117,24 @@ class TwitterScraper:
         Returns:
             List of Tweet objects
         """
-        instance = self._find_working_instance()
-        if not instance:
-            logger.error("Cannot get user tweets - no working Nitter instance")
+        if not await self.check_accounts():
             return []
 
         try:
-            results = self.scraper.get_tweets(
-                username, mode="user", number=max_results, instance=instance
-            )
+            # First get user ID
+            user = await self.api.user_by_login(username)
+            if not user:
+                logger.warning(f"User @{username} not found")
+                return []
 
             tweets = []
-            for tweet_data in results.get("tweets", []):
+            async for tweet in self.api.user_tweets(user.id, limit=max_results):
                 try:
-                    tweet = self._parse_tweet(tweet_data, default_username=username)
-                    if tweet:
-                        if since and tweet.timestamp < since:
+                    parsed = self._parse_tweet(tweet)
+                    if parsed:
+                        if since and parsed.timestamp < since:
                             continue
-                        tweets.append(tweet)
+                        tweets.append(parsed)
                 except Exception as e:
                     logger.warning(f"Failed to parse tweet: {e}")
                     continue
@@ -149,83 +144,48 @@ class TwitterScraper:
 
         except Exception as e:
             logger.error(f"Failed to get tweets from @{username}: {e}")
-            self._working_instance = None
             return []
 
-    def _parse_tweet(self, tweet_data: dict, default_username: str = "unknown") -> Optional[Tweet]:
-        """Parse raw tweet data into Tweet object"""
+    def _parse_tweet(self, tweet) -> Optional[Tweet]:
+        """Parse twscrape tweet object into our Tweet dataclass"""
         try:
-            # Extract tweet ID from link
-            link = tweet_data.get("link", "")
-            tweet_id = link.split("/")[-1].split("#")[0] if link else None
-
-            if not tweet_id:
-                return None
-
-            # Parse timestamp
-            date_str = tweet_data.get("date", "")
-            try:
-                timestamp = datetime.strptime(date_str, "%b %d, %Y · %I:%M %p UTC")
-            except ValueError:
-                timestamp = datetime.utcnow()
-
-            # Parse engagement stats
-            stats = tweet_data.get("stats", {})
-            likes = self._parse_stat(stats.get("likes", "0"))
-            retweets = self._parse_stat(stats.get("retweets", "0"))
-
-            # Get username from tweet data or use default
-            username = tweet_data.get("user", {}).get("username", default_username)
-
             return Tweet(
-                tweet_id=tweet_id,
-                text=tweet_data.get("text", ""),
-                url=f"https://twitter.com{link}" if link.startswith("/") else link,
-                author_username=username,
-                author_followers=0,  # Not always available from Nitter
-                likes=likes,
-                retweets=retweets,
-                timestamp=timestamp,
+                tweet_id=str(tweet.id),
+                text=tweet.rawContent,
+                url=f"https://twitter.com/{tweet.user.username}/status/{tweet.id}",
+                author_username=tweet.user.username,
+                author_followers=tweet.user.followersCount or 0,
+                likes=tweet.likeCount or 0,
+                retweets=tweet.retweetCount or 0,
+                timestamp=tweet.date.replace(tzinfo=timezone.utc) if tweet.date.tzinfo is None else tweet.date,
             )
         except Exception as e:
             logger.warning(f"Error parsing tweet: {e}")
             return None
 
-    def _parse_stat(self, stat: str) -> int:
-        """Parse engagement stat (handles K, M suffixes)"""
-        if not stat:
-            return 0
-        stat = str(stat).strip().upper()
-        try:
-            if "K" in stat:
-                return int(float(stat.replace("K", "")) * 1000)
-            elif "M" in stat:
-                return int(float(stat.replace("M", "")) * 1000000)
-            return int(stat.replace(",", ""))
-        except ValueError:
-            return 0
-
-    def search_memecoin_terms(self, max_results: int = 100) -> list[Tweet]:
+    async def search_memecoin_terms(self, max_results: int = 100) -> list[Tweet]:
         """
         Search for common memecoin-related terms.
 
         Returns combined results from multiple searches.
         """
         search_terms = [
+            "$",  # Catches ticker mentions
             "memecoin",
             "100x gem",
             "solana memecoin",
             "base memecoin",
-            "degen play",
-            "new launch token",
-            "presale token",
+            "pump.fun",
+            "new ca",
         ]
 
         all_tweets = []
         seen_ids = set()
 
+        per_term = max(10, max_results // len(search_terms))
+
         for term in search_terms:
-            tweets = self.search_tweets(term, max_results=max_results // len(search_terms))
+            tweets = await self.search_tweets(term, max_results=per_term)
             for tweet in tweets:
                 if tweet.tweet_id not in seen_ids:
                     seen_ids.add(tweet.tweet_id)
