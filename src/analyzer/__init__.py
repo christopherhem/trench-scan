@@ -1,3 +1,3 @@
-from .ticker import TickerAnalyzer
+from .ticker import TickerAnalyzer, ContractMention
 
-__all__ = ["TickerAnalyzer"]
+__all__ = ["TickerAnalyzer", "ContractMention"]

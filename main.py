@@ -63,12 +63,20 @@ async def run_scrape_cycle():
 
         logger.info(f"Found {len(tweets)} tweets")
 
-        # Extract tickers
+        # Extract pump.fun contract addresses
+        contracts = analyzer.extract_pump_fun_addresses(tweets)
+        logger.info(f"Extracted {len(contracts)} pump.fun contracts")
+
+        # Process contracts
+        contract_counts = analyzer.process_contracts(contracts)
+
+        # Also extract regular tickers
         mentions = analyzer.extract_tickers(tweets)
         logger.info(f"Extracted {len(mentions)} ticker mentions")
 
         # Save to database
         counts = analyzer.process_mentions(mentions)
+        counts.update(contract_counts)
 
         if counts:
             logger.info(f"Processed tickers: {dict(counts)}")

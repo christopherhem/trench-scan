@@ -252,19 +252,19 @@ class TwitterScraper:
 
     async def search_memecoin_terms(self, max_results: int = 100) -> list[Tweet]:
         """
-        Search for memecoin-related tweets using cashtags.
+        Search for pump.fun related tweets to find new memecoin launches.
 
-        Returns combined results from multiple cashtag searches.
+        Returns combined results from multiple searches.
         """
         all_tweets = []
         seen_ids = set()
 
-        # Search popular memecoin cashtags - expanded list
+        # Search for pump.fun related cashtags and terms
+        # Focus on new launches and pump.fun mentions
         cashtags = [
-            "PEPE", "WIF", "BONK", "DOGE", "SHIB", "FLOKI", "MEME",
-            "TRUMP", "MELANIA", "SPX", "POPCAT", "MOG", "BRETT",
-            "GIGA", "ANDY", "TOSHI", "DEGEN", "BOME", "SLERF",
-            "SOL", "BTC", "ETH",  # Major coins for testing
+            "PUMPFUN",
+            "SOL",
+            "SOLANA",
         ]
 
         cashtag_tweets = await self.search_cashtags(cashtags, max_items=max_results)

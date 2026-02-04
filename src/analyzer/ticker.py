@@ -59,8 +59,18 @@ class TrendingTicker:
     latest_tweet: Optional[Tweet] = None
 
 
+@dataclass
+class ContractMention:
+    """Extracted contract address mention"""
+
+    address: str
+    chain: str
+    tweet: Tweet
+    is_pump_fun: bool
+
+
 class TickerAnalyzer:
-    """Analyzes tweets to extract and score ticker mentions"""
+    """Analyzes tweets to extract and score ticker/contract mentions"""
 
     # Regex pattern for ticker symbols ($TICKER)
     TICKER_PATTERN = re.compile(r'\$([A-Z]{2,10})\b', re.IGNORECASE)
@@ -71,8 +81,55 @@ class TickerAnalyzer:
         "ethereum": re.compile(r'\b(0x[a-fA-F0-9]{40})\b'),
     }
 
+    # Pattern specifically for pump.fun addresses (end with "pump")
+    PUMP_FUN_PATTERN = re.compile(r'\b([1-9A-HJ-NP-Za-km-z]{32,44}pump)\b')
+
     def __init__(self, db: Session):
         self.db = db
+
+    def extract_pump_fun_addresses(self, tweets: list[Tweet]) -> list[ContractMention]:
+        """
+        Extract pump.fun contract addresses from tweets.
+
+        Args:
+            tweets: List of Tweet objects to analyze
+
+        Returns:
+            List of ContractMention objects for pump.fun addresses
+        """
+        mentions = []
+
+        for tweet in tweets:
+            # Find pump.fun addresses (ending in "pump")
+            pump_matches = self.PUMP_FUN_PATTERN.findall(tweet.text)
+
+            for address in pump_matches:
+                mentions.append(
+                    ContractMention(
+                        address=address,
+                        chain="solana",
+                        tweet=tweet,
+                        is_pump_fun=True,
+                    )
+                )
+
+            # Also check for general Solana addresses mentioned with pump.fun context
+            if "pump.fun" in tweet.text.lower() or "pumpfun" in tweet.text.lower():
+                sol_matches = self.CONTRACT_PATTERNS["solana"].findall(tweet.text)
+                for address in sol_matches:
+                    # Skip if already found as pump.fun address
+                    if address not in [m.address for m in mentions]:
+                        mentions.append(
+                            ContractMention(
+                                address=address,
+                                chain="solana",
+                                tweet=tweet,
+                                is_pump_fun=True,
+                            )
+                        )
+
+        logger.info(f"Extracted {len(mentions)} pump.fun addresses from {len(tweets)} tweets")
+        return mentions
 
     def extract_tickers(self, tweets: list[Tweet]) -> list[TickerMention]:
         """
@@ -217,6 +274,75 @@ class TickerAnalyzer:
                 ticker.last_seen = datetime.utcnow()
 
                 mention_counts[mention.symbol] += 1
+
+        self.db.commit()
+        return dict(mention_counts)
+
+    def process_contracts(self, contracts: list[ContractMention]) -> dict[str, int]:
+        """
+        Process pump.fun contract mentions and save to database.
+
+        Args:
+            contracts: List of ContractMention objects
+
+        Returns:
+            Dict of {address: mention_count}
+        """
+        mention_counts = defaultdict(int)
+        seen_tweet_ids = set()
+
+        for contract in contracts:
+            if contract.tweet.tweet_id in seen_tweet_ids:
+                continue
+
+            # Use shortened address as symbol for display (first 4 + last 4 chars)
+            short_addr = f"{contract.address[:4]}...{contract.address[-4:]}"
+
+            # Get or create ticker entry for this contract
+            ticker = (
+                self.db.query(Ticker)
+                .filter(Ticker.contract_address == contract.address)
+                .first()
+            )
+
+            if not ticker:
+                ticker = Ticker(
+                    symbol=short_addr,
+                    contract_address=contract.address,
+                    chain=contract.chain,
+                    first_seen=contract.tweet.timestamp,
+                    total_mentions=0,
+                )
+                self.db.add(ticker)
+                self.db.flush()
+                logger.info(f"New pump.fun token: {contract.address}")
+
+            # Check if tweet already exists
+            existing = (
+                self.db.query(Mention)
+                .filter(Mention.tweet_id == contract.tweet.tweet_id)
+                .first()
+            )
+
+            if not existing:
+                db_mention = Mention(
+                    ticker_id=ticker.id,
+                    tweet_id=contract.tweet.tweet_id,
+                    tweet_text=contract.tweet.text[:2000],
+                    tweet_url=contract.tweet.url,
+                    author_username=contract.tweet.author_username,
+                    author_followers=contract.tweet.author_followers,
+                    likes=contract.tweet.likes,
+                    retweets=contract.tweet.retweets,
+                    timestamp=contract.tweet.timestamp,
+                )
+                self.db.add(db_mention)
+                seen_tweet_ids.add(contract.tweet.tweet_id)
+
+                ticker.total_mentions += 1
+                ticker.last_seen = datetime.utcnow()
+
+                mention_counts[contract.address] += 1
 
         self.db.commit()
         return dict(mention_counts)
