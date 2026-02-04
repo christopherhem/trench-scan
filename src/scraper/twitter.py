@@ -1,16 +1,13 @@
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from dataclasses import dataclass
-from pathlib import Path
 
-from twscrape import API, gather
-from twscrape.logger import set_log_level
+import httpx
+
+from src.config import settings
 
 logger = logging.getLogger(__name__)
-
-# Suppress twscrape debug logs
-set_log_level("WARNING")
 
 
 @dataclass
@@ -28,136 +25,206 @@ class Tweet:
 
 
 class TwitterScraper:
-    """Scraper for Twitter/X using twscrape"""
+    """Scraper for Twitter/X using RapidAPI (twitterapi.io)"""
 
-    def __init__(self, db_path: str = "twscrape_accounts.db"):
-        self.db_path = db_path
-        self.api = API(db_path)
-        self._initialized = False
+    BASE_URL = "https://twitterapi-cheap.p.rapidapi.com"
 
-    async def add_account(self, username: str, password: str, email: str, email_password: str = ""):
+    def __init__(self):
+        self.api_key = settings.rapidapi_key
+        self.api_host = settings.rapidapi_host
+
+        if not self.api_key:
+            logger.warning("RapidAPI key not configured. Set RAPIDAPI_KEY in .env")
+
+    def _get_headers(self) -> dict:
+        """Get headers for RapidAPI requests"""
+        return {
+            "Content-Type": "application/json",
+            "x-rapidapi-host": self.api_host,
+            "x-rapidapi-key": self.api_key,
+        }
+
+    def _get_time_range(self) -> tuple[str, str]:
+        """Get time range for the last 24 hours"""
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(hours=24)
+
+        start_str = start.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+        end_str = now.strftime("%Y-%m-%d_%H:%M:%S_UTC")
+
+        return start_str, end_str
+
+    async def search_cashtags(self, cashtags: list[str], max_items: int = 20) -> list[Tweet]:
         """
-        Add a Twitter account for scraping.
+        Search for tweets mentioning specific cashtags.
 
         Args:
-            username: Twitter username
-            password: Twitter password
-            email: Email associated with the account
-            email_password: Email password (for verification if needed)
-        """
-        await self.api.pool.add_account(username, password, email, email_password)
-        await self.api.pool.login_all()
-        logger.info(f"Added Twitter account: @{username}")
-
-    async def check_accounts(self) -> bool:
-        """Check if we have any logged-in accounts"""
-        accounts = await self.api.pool.accounts_info()
-        active = [a for a in accounts if a["active"]]
-        if active:
-            logger.info(f"Found {len(active)} active Twitter account(s)")
-            return True
-        else:
-            logger.warning("No active Twitter accounts. Add one with 'python main.py add-account'")
-            return False
-
-    async def search_tweets(
-        self,
-        query: str,
-        max_results: int = 50,
-        since: Optional[datetime] = None,
-    ) -> list[Tweet]:
-        """
-        Search for tweets matching a query.
-
-        Args:
-            query: Search query (e.g., "$PEPE memecoin")
-            max_results: Maximum number of tweets to return
-            since: Only return tweets after this time
+            cashtags: List of cashtags to search (without $)
+            max_items: Maximum tweets to return per cashtag
 
         Returns:
             List of Tweet objects
         """
-        if not await self.check_accounts():
+        if not self.api_key:
+            logger.error("RapidAPI key not configured")
             return []
+
+        start_time, end_time = self._get_time_range()
 
         try:
-            tweets = []
-            async for tweet in self.api.search(query, limit=max_results):
-                try:
-                    parsed = self._parse_tweet(tweet)
-                    if parsed:
-                        if since and parsed.timestamp < since:
-                            continue
-                        tweets.append(parsed)
-                except Exception as e:
-                    logger.warning(f"Failed to parse tweet: {e}")
-                    continue
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/twitter/cashtags",
+                    headers=self._get_headers(),
+                    json={
+                        "cashtags": cashtags,
+                        "startTime": start_time,
+                        "endTime": end_time,
+                        "sortBy": "Latest",
+                        "maxItems": max_items,
+                    },
+                )
 
-            logger.info(f"Found {len(tweets)} tweets for query: {query}")
-            return tweets
+                if response.status_code != 200:
+                    logger.error(f"API error: {response.status_code} - {response.text[:200]}")
+                    return []
+
+                data = response.json()
+                tweets = self._parse_cashtag_response(data)
+                logger.info(f"Found {len(tweets)} tweets for cashtags: {cashtags}")
+                return tweets
 
         except Exception as e:
-            logger.error(f"Search failed for '{query}': {e}")
+            logger.error(f"Search failed: {e}")
             return []
 
-    async def get_user_tweets(
-        self,
-        username: str,
-        max_results: int = 20,
-        since: Optional[datetime] = None,
-    ) -> list[Tweet]:
+    async def search_keyword(self, keyword: str, max_items: int = 20) -> list[Tweet]:
         """
-        Get recent tweets from a specific user.
+        Search for tweets matching a keyword.
 
         Args:
-            username: Twitter username (without @)
-            max_results: Maximum number of tweets to return
-            since: Only return tweets after this time
+            keyword: Search keyword
+            max_items: Maximum tweets to return
 
         Returns:
             List of Tweet objects
         """
-        if not await self.check_accounts():
+        if not self.api_key:
+            logger.error("RapidAPI key not configured")
             return []
 
+        start_time, end_time = self._get_time_range()
+
         try:
-            # First get user ID
-            user = await self.api.user_by_login(username)
-            if not user:
-                logger.warning(f"User @{username} not found")
-                return []
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.BASE_URL}/twitter/search",
+                    headers=self._get_headers(),
+                    json={
+                        "query": keyword,
+                        "startTime": start_time,
+                        "endTime": end_time,
+                        "sortBy": "Latest",
+                        "maxItems": max_items,
+                    },
+                )
 
-            tweets = []
-            async for tweet in self.api.user_tweets(user.id, limit=max_results):
-                try:
-                    parsed = self._parse_tweet(tweet)
-                    if parsed:
-                        if since and parsed.timestamp < since:
-                            continue
-                        tweets.append(parsed)
-                except Exception as e:
-                    logger.warning(f"Failed to parse tweet: {e}")
-                    continue
+                if response.status_code != 200:
+                    logger.error(f"API error: {response.status_code} - {response.text[:200]}")
+                    return []
 
-            logger.info(f"Found {len(tweets)} tweets from @{username}")
-            return tweets
+                data = response.json()
+                tweets = self._parse_search_response(data)
+                logger.info(f"Found {len(tweets)} tweets for keyword: {keyword}")
+                return tweets
 
         except Exception as e:
-            logger.error(f"Failed to get tweets from @{username}: {e}")
+            logger.error(f"Search failed for '{keyword}': {e}")
             return []
 
-    def _parse_tweet(self, tweet) -> Optional[Tweet]:
-        """Parse twscrape tweet object into our Tweet dataclass"""
+    def _parse_cashtag_response(self, data: dict) -> list[Tweet]:
+        """Parse cashtag API response"""
+        tweets = []
+
+        # Handle different response structures
+        results = data if isinstance(data, list) else data.get("results", data.get("tweets", []))
+
+        if isinstance(results, dict):
+            # If results is a dict with cashtag keys
+            for cashtag, tag_tweets in results.items():
+                if isinstance(tag_tweets, list):
+                    for tweet_data in tag_tweets:
+                        tweet = self._parse_tweet(tweet_data)
+                        if tweet:
+                            tweets.append(tweet)
+        elif isinstance(results, list):
+            for tweet_data in results:
+                tweet = self._parse_tweet(tweet_data)
+                if tweet:
+                    tweets.append(tweet)
+
+        return tweets
+
+    def _parse_search_response(self, data: dict) -> list[Tweet]:
+        """Parse search API response"""
+        tweets = []
+
+        results = data if isinstance(data, list) else data.get("results", data.get("tweets", []))
+
+        if isinstance(results, list):
+            for tweet_data in results:
+                tweet = self._parse_tweet(tweet_data)
+                if tweet:
+                    tweets.append(tweet)
+
+        return tweets
+
+    def _parse_tweet(self, tweet_data: dict) -> Optional[Tweet]:
+        """Parse individual tweet from API response"""
         try:
+            # Handle various field names from API
+            tweet_id = str(tweet_data.get("id") or tweet_data.get("tweet_id") or tweet_data.get("id_str", ""))
+
+            if not tweet_id:
+                return None
+
+            text = tweet_data.get("text") or tweet_data.get("full_text") or tweet_data.get("content", "")
+
+            # Get author info
+            user = tweet_data.get("user") or tweet_data.get("author") or {}
+            username = user.get("username") or user.get("screen_name") or tweet_data.get("username", "unknown")
+            followers = user.get("followers_count") or user.get("followersCount", 0)
+
+            # Get engagement
+            likes = tweet_data.get("favorite_count") or tweet_data.get("likeCount") or tweet_data.get("likes", 0)
+            retweets = tweet_data.get("retweet_count") or tweet_data.get("retweetCount") or tweet_data.get("retweets", 0)
+
+            # Parse timestamp
+            created_at = tweet_data.get("created_at") or tweet_data.get("timestamp") or tweet_data.get("date")
+            if isinstance(created_at, str):
+                try:
+                    # Try ISO format
+                    timestamp = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                except ValueError:
+                    try:
+                        # Try Twitter format
+                        timestamp = datetime.strptime(created_at, "%a %b %d %H:%M:%S %z %Y")
+                    except ValueError:
+                        timestamp = datetime.now(timezone.utc)
+            elif isinstance(created_at, (int, float)):
+                timestamp = datetime.fromtimestamp(created_at, tz=timezone.utc)
+            else:
+                timestamp = datetime.now(timezone.utc)
+
             return Tweet(
-                tweet_id=str(tweet.id),
-                text=tweet.rawContent,
-                url=f"https://twitter.com/{tweet.user.username}/status/{tweet.id}",
-                author_username=tweet.user.username,
-                author_followers=tweet.user.followersCount or 0,
-                likes=tweet.likeCount or 0,
-                retweets=tweet.retweetCount or 0,
-                timestamp=tweet.date.replace(tzinfo=timezone.utc) if tweet.date.tzinfo is None else tweet.date,
+                tweet_id=tweet_id,
+                text=text,
+                url=f"https://twitter.com/{username}/status/{tweet_id}",
+                author_username=username,
+                author_followers=followers or 0,
+                likes=likes or 0,
+                retweets=retweets or 0,
+                timestamp=timestamp,
             )
         except Exception as e:
             logger.warning(f"Error parsing tweet: {e}")
@@ -165,30 +232,31 @@ class TwitterScraper:
 
     async def search_memecoin_terms(self, max_results: int = 100) -> list[Tweet]:
         """
-        Search for common memecoin-related terms.
+        Search for memecoin-related tweets using cashtags and keywords.
 
         Returns combined results from multiple searches.
         """
-        search_terms = [
-            "$",  # Catches ticker mentions
-            "memecoin",
-            "100x gem",
-            "solana memecoin",
-            "base memecoin",
-            "pump.fun",
-            "new ca",
-        ]
-
         all_tweets = []
         seen_ids = set()
 
-        per_term = max(10, max_results // len(search_terms))
+        # Search popular memecoin cashtags
+        cashtags = ["PEPE", "WIF", "BONK", "DOGE", "SHIB", "FLOKI", "MEME", "TRUMP", "MELANIA"]
 
-        for term in search_terms:
-            tweets = await self.search_tweets(term, max_results=per_term)
-            for tweet in tweets:
+        cashtag_tweets = await self.search_cashtags(cashtags, max_items=max_results // 2)
+        for tweet in cashtag_tweets:
+            if tweet.tweet_id not in seen_ids:
+                seen_ids.add(tweet.tweet_id)
+                all_tweets.append(tweet)
+
+        # Search memecoin keywords
+        keywords = ["memecoin", "100x gem", "solana memecoin", "pump.fun"]
+
+        for keyword in keywords:
+            keyword_tweets = await self.search_keyword(keyword, max_items=max_results // len(keywords) // 2)
+            for tweet in keyword_tweets:
                 if tweet.tweet_id not in seen_ids:
                     seen_ids.add(tweet.tweet_id)
                     all_tweets.append(tweet)
 
+        logger.info(f"Total tweets collected: {len(all_tweets)}")
         return all_tweets

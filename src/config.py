@@ -15,6 +15,10 @@ class Settings(BaseSettings):
     discord_bot_token: Optional[str] = Field(default=None)
     discord_channel_id: Optional[str] = Field(default=None)
 
+    # RapidAPI (Twitter scraping)
+    rapidapi_key: Optional[str] = Field(default=None)
+    rapidapi_host: str = Field(default="twitterapi-cheap.p.rapidapi.com")
+
     # Scraper Settings
     scrape_interval_minutes: int = Field(default=5)
     min_mentions_threshold: int = Field(default=3)
