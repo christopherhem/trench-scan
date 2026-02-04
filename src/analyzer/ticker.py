@@ -163,8 +163,13 @@ class TickerAnalyzer:
             Dict of {symbol: mention_count}
         """
         mention_counts = defaultdict(int)
+        seen_tweet_ids = set()  # Track tweets processed in this batch
 
         for mention in mentions:
+            # Skip if we already processed this tweet in this batch
+            if mention.tweet.tweet_id in seen_tweet_ids:
+                continue
+
             # Get or create ticker
             ticker = (
                 self.db.query(Ticker)
@@ -182,7 +187,7 @@ class TickerAnalyzer:
                 self.db.flush()
                 logger.info(f"New ticker discovered: ${mention.symbol}")
 
-            # Check if we already have this tweet
+            # Check if we already have this tweet in database
             existing = (
                 self.db.query(Mention)
                 .filter(Mention.tweet_id == mention.tweet.tweet_id)
@@ -203,6 +208,9 @@ class TickerAnalyzer:
                     timestamp=mention.tweet.timestamp,
                 )
                 self.db.add(db_mention)
+
+                # Mark tweet as seen in this batch
+                seen_tweet_ids.add(mention.tweet.tweet_id)
 
                 # Update ticker stats
                 ticker.total_mentions += 1
