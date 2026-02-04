@@ -113,13 +113,24 @@ async def run_scrape_cycle():
         now = datetime.now(timezone.utc)
 
         for token in new_tokens:
+            # Skip tokens with invalid/missing data
+            if not token.address or not token.symbol or token.symbol == "???":
+                continue
+
             # Calculate age in minutes
             age_minutes = int((now - token.created_timestamp).total_seconds() / 60)
 
-            # Store token in database
+            # Store token in database - look up by contract_address (unique per token)
             db_ticker = db.query(Ticker).filter(Ticker.contract_address == token.address).first()
 
             if not db_ticker:
+                # Also check if symbol exists (to avoid unique constraint error)
+                existing_symbol = db.query(Ticker).filter(Ticker.symbol == token.symbol).first()
+                if existing_symbol:
+                    # Symbol exists with different address - update address or skip
+                    logger.debug(f"Symbol ${token.symbol} already exists, skipping duplicate")
+                    continue
+
                 db_ticker = Ticker(
                     symbol=token.symbol,
                     contract_address=token.address,

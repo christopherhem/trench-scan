@@ -66,12 +66,24 @@ class DexScreenerScraper:
 
             for item in data[:limit]:
                 token = self._parse_profile(item)
-                if token:
+                # Only include tokens with valid symbol data
+                if token and token.symbol and token.symbol != "???":
                     tokens.append(token)
 
             # Filter by age if we have timestamp info
             if tokens and tokens[0].created_timestamp:
                 tokens = [t for t in tokens if t.created_timestamp >= cutoff_time]
+
+            # If we got too few tokens with valid data, try boosted endpoint
+            if len(tokens) < 10:
+                logger.info(f"Only {len(tokens)} valid tokens from profiles, trying boosted...")
+                boosted = await self._get_from_boosted(limit, max_age_hours)
+                # Add boosted tokens that aren't duplicates
+                seen_addresses = {t.address for t in tokens}
+                for bt in boosted:
+                    if bt.address not in seen_addresses:
+                        tokens.append(bt)
+                        seen_addresses.add(bt.address)
 
             logger.info(f"Found {len(tokens)} new Solana tokens on DexScreener")
             return tokens
@@ -97,7 +109,8 @@ class DexScreenerScraper:
             for item in data[:limit]:
                 if item.get("chainId") == "solana":
                     token = self._parse_boost(item)
-                    if token:
+                    # Only include tokens with valid symbol data
+                    if token and token.symbol and token.symbol != "???":
                         tokens.append(token)
 
             logger.info(f"Found {len(tokens)} boosted Solana tokens on DexScreener")
