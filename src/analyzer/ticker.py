@@ -82,7 +82,8 @@ class TickerAnalyzer:
     }
 
     # Pattern specifically for pump.fun addresses (end with "pump")
-    PUMP_FUN_PATTERN = re.compile(r'\b([1-9A-HJ-NP-Za-km-z]{32,44}pump)\b')
+    # Pump.fun addresses are 44 chars total, ending in "pump"
+    PUMP_FUN_PATTERN = re.compile(r'\b([1-9A-HJ-NP-Za-km-z]{40}pump)\b')
 
     def __init__(self, db: Session):
         self.db = db

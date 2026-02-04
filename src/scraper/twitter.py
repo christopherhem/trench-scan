@@ -259,12 +259,17 @@ class TwitterScraper:
         all_tweets = []
         seen_ids = set()
 
-        # Search for pump.fun related cashtags and terms
-        # Focus on new launches and pump.fun mentions
+        # Search for pump.fun related cashtags
+        # These are common terms used when sharing new pump.fun launches
         cashtags = [
-            "PUMPFUN",
             "SOL",
             "SOLANA",
+            "PUMP",
+            "PUMPFUN",
+            "MEMECOIN",
+            "DEGEN",
+            "APE",
+            "GEM",
         ]
 
         cashtag_tweets = await self.search_cashtags(cashtags, max_items=max_results)
