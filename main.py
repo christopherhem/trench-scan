@@ -24,6 +24,7 @@ from src.config import settings
 from src.database.models import init_db, SessionLocal, Ticker, Mention
 from src.scraper.twitter import TwitterScraper
 from src.scraper.pumpfun import PumpFunScraper, PumpFunToken
+from src.scraper.dexscreener import DexScreenerScraper, DexToken
 from src.analyzer.ticker import TickerAnalyzer
 from src.dashboard.app import app
 from src.bots.telegram_bot import TelegramBot
@@ -61,6 +62,7 @@ async def run_scrape_cycle():
     logger.info("Starting scrape cycle...")
 
     pumpfun = PumpFunScraper()
+    dexscreener = DexScreenerScraper()
     twitter = TwitterScraper()
 
     if not settings.rapidapi_key:
@@ -74,8 +76,34 @@ async def run_scrape_cycle():
         new_tokens = await pumpfun.get_new_tokens(limit=100, max_age_hours=6)
         logger.info(f"Found {len(new_tokens)} new tokens on pump.fun")
 
+        # If pump.fun fails, try DexScreener as fallback
         if not new_tokens:
-            logger.warning("No new pump.fun tokens found")
+            logger.info("Pump.fun returned no tokens, trying DexScreener...")
+            dex_tokens = await dexscreener.get_new_solana_tokens(limit=100, max_age_hours=6)
+
+            if dex_tokens:
+                logger.info(f"Found {len(dex_tokens)} tokens from DexScreener")
+                # Convert DexToken to PumpFunToken format for unified processing
+                new_tokens = [
+                    PumpFunToken(
+                        address=dt.address,
+                        name=dt.name,
+                        symbol=dt.symbol,
+                        description="",
+                        image_uri=None,
+                        creator="",
+                        created_timestamp=dt.created_timestamp,
+                        market_cap=dt.liquidity_usd,  # Use liquidity as proxy for market cap
+                        reply_count=0,
+                        website=None,
+                        twitter=None,
+                        telegram=None,
+                    )
+                    for dt in dex_tokens
+                ]
+
+        if not new_tokens:
+            logger.warning("No new tokens found from pump.fun or DexScreener")
             # Fall back to Twitter-only mode
             await run_twitter_only_cycle(twitter, db)
             return
@@ -184,6 +212,7 @@ async def run_scrape_cycle():
         traceback.print_exc()
     finally:
         await pumpfun.close()
+        await dexscreener.close()
         db.close()
 
 
