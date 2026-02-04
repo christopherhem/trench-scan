@@ -31,8 +31,18 @@ class PumpFunScraper:
 
     BASE_URL = "https://frontend-api.pump.fun"
 
+    # Browser-like headers to avoid Cloudflare blocks
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Origin": "https://pump.fun",
+        "Referer": "https://pump.fun/",
+    }
+
     def __init__(self):
-        self.client = httpx.AsyncClient(timeout=30.0)
+        self.client = httpx.AsyncClient(timeout=30.0, headers=self.HEADERS)
 
     async def get_new_tokens(
         self,
@@ -49,38 +59,48 @@ class PumpFunScraper:
         Returns:
             List of PumpFunToken objects
         """
-        try:
-            # Fetch latest coins sorted by creation time
-            response = await self.client.get(
-                f"{self.BASE_URL}/coins",
-                params={
-                    "offset": 0,
-                    "limit": limit,
-                    "sort": "created_timestamp",
-                    "order": "DESC",
-                    "includeNsfw": "false",
-                },
-            )
+        # Try multiple endpoints
+        endpoints = [
+            f"{self.BASE_URL}/coins",
+            "https://client-api-2-74b1891ee9f9.herokuapp.com/coins",
+        ]
 
-            if response.status_code != 200:
-                logger.error(f"Pump.fun API error: {response.status_code}")
-                return []
+        for endpoint in endpoints:
+            try:
+                response = await self.client.get(
+                    endpoint,
+                    params={
+                        "offset": 0,
+                        "limit": limit,
+                        "sort": "created_timestamp",
+                        "order": "DESC",
+                        "includeNsfw": "false",
+                    },
+                )
 
-            data = response.json()
-            tokens = []
-            cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+                if response.status_code != 200:
+                    logger.warning(f"Pump.fun endpoint {endpoint} returned: {response.status_code}")
+                    continue
 
-            for item in data:
-                token = self._parse_token(item)
-                if token and token.created_timestamp >= cutoff_time:
-                    tokens.append(token)
+                data = response.json()
+                tokens = []
+                cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
 
-            logger.info(f"Found {len(tokens)} new pump.fun tokens (last {max_age_hours}h)")
-            return tokens
+                for item in data:
+                    token = self._parse_token(item)
+                    if token and token.created_timestamp >= cutoff_time:
+                        tokens.append(token)
 
-        except Exception as e:
-            logger.error(f"Failed to fetch pump.fun tokens: {e}")
-            return []
+                if tokens:
+                    logger.info(f"Found {len(tokens)} new pump.fun tokens (last {max_age_hours}h)")
+                    return tokens
+
+            except Exception as e:
+                logger.warning(f"Endpoint {endpoint} failed: {e}")
+                continue
+
+        logger.error("All pump.fun endpoints failed")
+        return []
 
     async def get_king_of_hill(self) -> list[PumpFunToken]:
         """
