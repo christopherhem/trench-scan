@@ -90,6 +90,7 @@ class TwitterScraper:
                     return []
 
                 data = response.json()
+                logger.debug(f"API response: {data}")
                 tweets = self._parse_cashtag_response(data)
                 logger.info(f"Found {len(tweets)} tweets for cashtags: {cashtags}")
                 return tweets
@@ -142,22 +143,41 @@ class TwitterScraper:
             logger.error(f"Search failed for '{keyword}': {e}")
             return []
 
-    def _parse_cashtag_response(self, data: dict) -> list[Tweet]:
+    def _parse_cashtag_response(self, data) -> list[Tweet]:
         """Parse cashtag API response"""
         tweets = []
 
-        # Handle different response structures
-        results = data if isinstance(data, list) else data.get("results", data.get("tweets", []))
+        # Log the response structure for debugging
+        logger.info(f"API response type: {type(data)}, keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
 
-        if isinstance(results, dict):
-            # If results is a dict with cashtag keys
-            for cashtag, tag_tweets in results.items():
-                if isinstance(tag_tweets, list):
-                    for tweet_data in tag_tweets:
-                        tweet = self._parse_tweet(tweet_data)
-                        if tweet:
-                            tweets.append(tweet)
-        elif isinstance(results, list):
+        # Handle different response structures
+        if isinstance(data, list):
+            results = data
+        elif isinstance(data, dict):
+            # Try various possible keys
+            results = (
+                data.get("results") or
+                data.get("tweets") or
+                data.get("data") or
+                data.get("statuses") or
+                []
+            )
+
+            # If results is still a dict (keyed by cashtag), flatten it
+            if isinstance(results, dict):
+                flattened = []
+                for key, value in results.items():
+                    if isinstance(value, list):
+                        flattened.extend(value)
+                    elif isinstance(value, dict) and "tweets" in value:
+                        flattened.extend(value["tweets"])
+                results = flattened
+        else:
+            results = []
+
+        logger.info(f"Parsing {len(results) if isinstance(results, list) else 0} results")
+
+        if isinstance(results, list):
             for tweet_data in results:
                 tweet = self._parse_tweet(tweet_data)
                 if tweet:
@@ -232,31 +252,26 @@ class TwitterScraper:
 
     async def search_memecoin_terms(self, max_results: int = 100) -> list[Tweet]:
         """
-        Search for memecoin-related tweets using cashtags and keywords.
+        Search for memecoin-related tweets using cashtags.
 
-        Returns combined results from multiple searches.
+        Returns combined results from multiple cashtag searches.
         """
         all_tweets = []
         seen_ids = set()
 
-        # Search popular memecoin cashtags
-        cashtags = ["PEPE", "WIF", "BONK", "DOGE", "SHIB", "FLOKI", "MEME", "TRUMP", "MELANIA"]
+        # Search popular memecoin cashtags - expanded list
+        cashtags = [
+            "PEPE", "WIF", "BONK", "DOGE", "SHIB", "FLOKI", "MEME",
+            "TRUMP", "MELANIA", "SPX", "POPCAT", "MOG", "BRETT",
+            "GIGA", "ANDY", "TOSHI", "DEGEN", "BOME", "SLERF",
+            "SOL", "BTC", "ETH",  # Major coins for testing
+        ]
 
-        cashtag_tweets = await self.search_cashtags(cashtags, max_items=max_results // 2)
+        cashtag_tweets = await self.search_cashtags(cashtags, max_items=max_results)
         for tweet in cashtag_tweets:
             if tweet.tweet_id not in seen_ids:
                 seen_ids.add(tweet.tweet_id)
                 all_tweets.append(tweet)
-
-        # Search memecoin keywords
-        keywords = ["memecoin", "100x gem", "solana memecoin", "pump.fun"]
-
-        for keyword in keywords:
-            keyword_tweets = await self.search_keyword(keyword, max_items=max_results // len(keywords) // 2)
-            for tweet in keyword_tweets:
-                if tweet.tweet_id not in seen_ids:
-                    seen_ids.add(tweet.tweet_id)
-                    all_tweets.append(tweet)
 
         logger.info(f"Total tweets collected: {len(all_tweets)}")
         return all_tweets
