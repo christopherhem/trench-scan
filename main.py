@@ -13,14 +13,17 @@ Usage:
 import asyncio
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
+from dataclasses import dataclass
+from typing import Optional
 
 import uvicorn
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from src.config import settings
-from src.database.models import init_db, SessionLocal
+from src.database.models import init_db, SessionLocal, Ticker, Mention
 from src.scraper.twitter import TwitterScraper
+from src.scraper.pumpfun import PumpFunScraper, PumpFunToken
 from src.analyzer.ticker import TickerAnalyzer
 from src.dashboard.app import app
 from src.bots.telegram_bot import TelegramBot
@@ -38,64 +41,184 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ViralToken:
+    """Token with combined pump.fun + Twitter data"""
+    address: str
+    name: str
+    symbol: str
+    created_timestamp: datetime
+    age_minutes: int
+    market_cap: float
+    twitter_mentions: int
+    twitter_engagement: int  # likes + RTs
+    viral_score: float
+    pump_fun_data: Optional[PumpFunToken] = None
+
+
 async def run_scrape_cycle():
     """Run a single scrape and analysis cycle"""
     logger.info("Starting scrape cycle...")
 
-    scraper = TwitterScraper()
+    pumpfun = PumpFunScraper()
+    twitter = TwitterScraper()
 
     if not settings.rapidapi_key:
-        logger.error("RapidAPI key not configured. Set RAPIDAPI_KEY in .env")
-        return
+        logger.warning("RapidAPI key not configured - Twitter search disabled")
 
     db = SessionLocal()
 
     try:
-        analyzer = TickerAnalyzer(db)
+        # Step 1: Get new tokens from pump.fun (last 6 hours)
+        logger.info("Fetching new pump.fun launches...")
+        new_tokens = await pumpfun.get_new_tokens(limit=100, max_age_hours=6)
+        logger.info(f"Found {len(new_tokens)} new tokens on pump.fun")
 
-        # Scrape memecoin-related tweets
-        logger.info("Searching for memecoin tweets...")
-        tweets = await scraper.search_memecoin_terms(max_results=100)
-
-        if not tweets:
-            logger.warning("No tweets found in this cycle")
+        if not new_tokens:
+            logger.warning("No new pump.fun tokens found")
+            # Fall back to Twitter-only mode
+            await run_twitter_only_cycle(twitter, db)
             return
 
-        logger.info(f"Found {len(tweets)} tweets")
+        # Step 2: Search Twitter for mentions of these tokens
+        viral_tokens = []
+        now = datetime.now(timezone.utc)
 
-        # Extract pump.fun contract addresses
-        contracts = analyzer.extract_pump_fun_addresses(tweets)
-        logger.info(f"Extracted {len(contracts)} pump.fun contracts")
+        for token in new_tokens:
+            # Calculate age in minutes
+            age_minutes = int((now - token.created_timestamp).total_seconds() / 60)
 
-        # Process contracts
-        contract_counts = analyzer.process_contracts(contracts)
+            # Store token in database
+            db_ticker = db.query(Ticker).filter(Ticker.contract_address == token.address).first()
 
-        # Also extract regular tickers
-        mentions = analyzer.extract_tickers(tweets)
-        logger.info(f"Extracted {len(mentions)} ticker mentions")
+            if not db_ticker:
+                db_ticker = Ticker(
+                    symbol=token.symbol,
+                    contract_address=token.address,
+                    chain="solana",
+                    first_seen=token.created_timestamp,
+                    total_mentions=0,
+                )
+                db.add(db_ticker)
+                db.flush()
+                logger.info(f"New token: ${token.symbol} ({token.address[:8]}...{token.address[-4:]}) - {age_minutes}m old")
 
-        # Save to database
-        counts = analyzer.process_mentions(mentions)
-        counts.update(contract_counts)
+            # Search Twitter for this token's CA (if we have API key)
+            twitter_mentions = 0
+            twitter_engagement = 0
 
-        if counts:
-            logger.info(f"Processed tickers: {dict(counts)}")
+            if settings.rapidapi_key and token.address:
+                # Search for the CA on Twitter
+                tweets = await twitter.search_cashtags([token.symbol], max_items=10)
 
-        # Calculate trending
-        trending = analyzer.calculate_trending(limit=10)
+                for tweet in tweets:
+                    # Check if tweet mentions this specific CA
+                    if token.address in tweet.text or token.symbol.upper() in tweet.text.upper():
+                        twitter_mentions += 1
+                        twitter_engagement += tweet.likes + tweet.retweets
 
-        if trending:
-            logger.info("Top trending tickers:")
-            for i, t in enumerate(trending[:5], 1):
-                logger.info(f"  {i}. ${t.symbol} - Score: {t.score:.0f}, 1h: {t.mentions_1h}")
+                        # Store mention
+                        existing = db.query(Mention).filter(Mention.tweet_id == tweet.tweet_id).first()
+                        if not existing:
+                            db_mention = Mention(
+                                ticker_id=db_ticker.id,
+                                tweet_id=tweet.tweet_id,
+                                tweet_text=tweet.text[:2000],
+                                tweet_url=tweet.url,
+                                author_username=tweet.author_username,
+                                author_followers=tweet.author_followers,
+                                likes=tweet.likes,
+                                retweets=tweet.retweets,
+                                timestamp=tweet.timestamp,
+                            )
+                            db.add(db_mention)
+                            db_ticker.total_mentions += 1
 
+            # Calculate viral score
+            # Factors: age (newer = better), mentions, engagement, market cap
+            age_factor = max(0, 1 - (age_minutes / 360))  # 0-1, newer is higher
+            mention_factor = min(twitter_mentions * 10, 100)  # Up to 100 points
+            engagement_factor = min(twitter_engagement / 10, 50)  # Up to 50 points
+            mcap_factor = min(token.market_cap / 10000, 50) if token.market_cap > 0 else 0  # Up to 50 points
+
+            viral_score = (age_factor * 50) + mention_factor + engagement_factor + mcap_factor
+
+            viral_tokens.append(ViralToken(
+                address=token.address,
+                name=token.name,
+                symbol=token.symbol,
+                created_timestamp=token.created_timestamp,
+                age_minutes=age_minutes,
+                market_cap=token.market_cap,
+                twitter_mentions=twitter_mentions,
+                twitter_engagement=twitter_engagement,
+                viral_score=viral_score,
+                pump_fun_data=token,
+            ))
+
+        db.commit()
+
+        # Sort by viral score
+        viral_tokens.sort(key=lambda x: x.viral_score, reverse=True)
+
+        # Log top tokens
+        logger.info("=" * 50)
+        logger.info("TOP VIRAL PUMP.FUN TOKENS:")
+        logger.info("=" * 50)
+
+        for i, token in enumerate(viral_tokens[:10], 1):
+            mcap_str = f"${token.market_cap:,.0f}" if token.market_cap > 0 else "N/A"
+            logger.info(
+                f"{i}. ${token.symbol} | Age: {token.age_minutes}m | "
+                f"MCap: {mcap_str} | Tweets: {token.twitter_mentions} | "
+                f"Score: {token.viral_score:.0f}"
+            )
+            logger.info(f"   CA: {token.address}")
+
+        logger.info("=" * 50)
         logger.info("Scrape cycle completed")
 
     except Exception as e:
         logger.error(f"Scrape cycle failed: {e}")
-        raise
+        import traceback
+        traceback.print_exc()
     finally:
+        await pumpfun.close()
         db.close()
+
+
+async def run_twitter_only_cycle(twitter: TwitterScraper, db):
+    """Fallback: Run Twitter-only scrape if pump.fun fails"""
+    logger.info("Running Twitter-only scrape...")
+
+    analyzer = TickerAnalyzer(db)
+
+    tweets = await twitter.search_memecoin_terms(max_results=100)
+
+    if not tweets:
+        logger.warning("No tweets found")
+        return
+
+    logger.info(f"Found {len(tweets)} tweets")
+
+    # Extract pump.fun addresses
+    contracts = analyzer.extract_pump_fun_addresses(tweets)
+    logger.info(f"Extracted {len(contracts)} pump.fun contracts")
+
+    # Process
+    analyzer.process_contracts(contracts)
+
+    # Also extract tickers
+    mentions = analyzer.extract_tickers(tweets)
+    analyzer.process_mentions(mentions)
+
+    # Show trending
+    trending = analyzer.calculate_trending(limit=10)
+
+    if trending:
+        logger.info("Top trending:")
+        for i, t in enumerate(trending[:5], 1):
+            logger.info(f"  {i}. ${t.symbol} - Score: {t.score:.0f}")
 
 
 async def run_scraper_loop():
@@ -157,12 +280,6 @@ async def run_all():
 
     # Initialize database
     init_db()
-
-    # Check for RapidAPI key
-    if not settings.rapidapi_key:
-        logger.error("RapidAPI key not configured. Set RAPIDAPI_KEY in .env")
-        logger.error("Get your key from: https://rapidapi.com/twitterapi.io/api/twitterapi-io")
-        return
 
     # Create tasks
     tasks = [
